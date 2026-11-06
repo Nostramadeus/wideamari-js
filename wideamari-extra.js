@@ -805,7 +805,16 @@ document.head.append(s)
     // (split on whitespace, like CyTube's emote matching). Each url at most once per message.
     function soundsInMessage(msg) {
         var tokens = {};
-        String(msg || '').split(/\s+/).forEach(function (token) {
+        // CyTube's own chatMsg handler runs first and already swaps emote words for <img> tags
+        // (title = the emote name), so read names from those tags as well as from plain words.
+        var text = String(msg || '').replace(/<img\b[^>]*>/gi, function (tag) {
+            if (/\bclass="[^"]*\bchannel-emote\b/.test(tag)) {
+                var title = /\btitle="([^"]*)"/.exec(tag);
+                if (title) tokens[title[1]] = true;
+            }
+            return ' ';
+        });
+        text.split(/\s+/).forEach(function (token) {
             if (token) tokens[token] = true;
         });
         var urls = [];
