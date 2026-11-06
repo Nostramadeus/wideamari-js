@@ -77,13 +77,31 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     p.send(Array(10).fill('/doroclapsound').join(' '));
     await wait(1600);
     check('10 in one message plays only 6', p.plays.length === 6, p.plays.length);
+    const first = p.live[0];
     p.send('/doroclapsound');
-    check('a 7th while 6 are still playing is skipped', p.plays.length === 6, p.plays.length);
-    p.live.forEach(a => a.end());
+    check('a 7th while 6 play: it plays and the oldest stops', p.plays.length === 7 && p.live.length === 7, p.plays.length);
+    first.volume = -1; // the stopped one must not be touched by later volume updates
     p.send('/doroclapsound');
-    check('after they end, sounds play again', p.plays.length === 7, p.plays.length);
+    check('stopped sounds are no longer volume-updated', first.volume === -1, first.volume);
 }
-// 5. muted viewer hears nothing; join history never plays
+// 5. crowd volume: 1 sound = 40 %, each extra +10 %, 6 at once = 60 % (150 % of 40); back down as they end
+{
+    const p = page();
+    p.send('/doroclapsound');
+    const v1 = p.live[0].volume;
+    p.send('/doroclapsound'); p.send('/doroclapsound'); p.send('/doroclapsound'); p.send('/doroclapsound'); p.send('/doroclapsound');
+    const v6 = p.live.map(a => a.volume);
+    p.live.slice(1).forEach(a => a.end());
+    const back = p.live[0].volume;
+    const near = (a, b) => Math.abs(a - b) < 1e-9;
+    check('1 sound plays at the viewer volume (40 %)', near(v1, 0.4), v1);
+    check('6 at once: all of them at 60 %', v6.every(v => near(v, 0.6)), v6);
+    check('when the others end, the last one drops back to 40 %', near(back, 0.4), back);
+    const q = page(JSON.stringify({ on: true, volume: 90 }));
+    for (let i = 0; i < 6; i++) q.send('/doroclapsound');
+    check('loud viewer (90 %): capped at 100 %, never above', q.live.every(a => a.volume <= 1 && near(a.volume, 1)), q.live.map(a => a.volume));
+}
+// 6. muted viewer hears nothing; join history never plays
 {
     const p = page(JSON.stringify({ on: false, volume: 40 }));
     p.send('/doroclapsound');

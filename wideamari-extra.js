@@ -760,7 +760,8 @@ document.head.append(s)
     // No cooldown: every use plays, from every user, and 4 in one message = 4 sounds.
     var STAGGER_MS = 250;             // repeats inside one message start 0.25 s apart, so each is heard
     var MAX_PER_MESSAGE = 6;          // one message plays at most 6 sounds
-    var MAX_PLAYING = 6;              // ear safety: at most 6 sounds at the same time for each viewer
+    var MAX_PLAYING = 6;              // at most 6 sounds at the same time for each viewer; a 7th stops the oldest
+    var LOUDER_PER_EXTRA = 0.1;       // each extra sound playing at once makes all of them 10 % louder (6 = 150 %)
     var STORE_KEY = 'wideamari-sound'; // localStorage: { "on": true, "volume": 40 }
     var DEFAULTS = { on: true, volume: 40 };
 
@@ -866,17 +867,30 @@ document.head.append(s)
         playingNow = [];
     }
 
+    // The more sounds play at once, the louder all of them get: 1 sound = the viewer's volume,
+    // each extra one adds 10 %, so 6 at once = 150 % (capped at the browser's maximum, 100 %).
+    function crowdVolume() {
+        var n = Math.max(1, playingNow.length);
+        return Math.min(1, (settings.volume / 100) * (1 + LOUDER_PER_EXTRA * (n - 1)));
+    }
+
+    function applyCrowdVolume() {
+        var v = crowdVolume();
+        playingNow.forEach(function (audio) { audio.volume = v; });
+    }
+
     function playSound(url) {
         if (!settings.on) return false;
-        if (playingNow.length >= MAX_PLAYING) return false;
+        // Full: the oldest sound stops so the newest is always heard.
+        while (playingNow.length >= MAX_PLAYING) playingNow[0].pause();
         // A clone of the preloaded copy, so overlapping plays never cut each other off.
         var base = getAudio(url);
         var audio = typeof base.cloneNode === 'function' ? base.cloneNode(true) : new Audio(url);
-        audio.volume = settings.volume / 100;
         playingNow.push(audio);
+        applyCrowdVolume();
         var done = function () {
             var i = playingNow.indexOf(audio);
-            if (i !== -1) playingNow.splice(i, 1);
+            if (i !== -1) { playingNow.splice(i, 1); applyCrowdVolume(); }
         };
         if (typeof audio.addEventListener === 'function') {
             audio.addEventListener('ended', done);
@@ -1113,7 +1127,7 @@ document.head.append(s)
 
     volumeSlider.addEventListener('input', function () {
         settings.volume = Math.max(0, Math.min(100, Math.round(Number(volumeSlider.value) || 0)));
-        playingNow.forEach(function (audio) { audio.volume = settings.volume / 100; });
+        applyCrowdVolume();
         saveSettings();
         showSettings();
     });
