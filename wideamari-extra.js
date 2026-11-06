@@ -757,7 +757,10 @@ document.head.append(s)
         // { emote: '/doroclap', url: 'https://files.catbox.moe/xxxxxx.mp3' },
     ];
 
-    var COOLDOWN_MS = 10000;          // the same sound plays at most once per 10 s for each viewer
+    // No cooldown: every use plays, from every user, and 4 in one message = 4 sounds.
+    var STAGGER_MS = 250;             // repeats inside one message start 0.25 s apart, so each is heard
+    var MAX_PER_MESSAGE = 6;          // one message plays at most 6 sounds
+    var MAX_PLAYING = 6;              // ear safety: at most 6 sounds at the same time for each viewer
     var STORE_KEY = 'wideamari-sound'; // localStorage: { "on": true, "volume": 40 }
     var DEFAULTS = { on: true, volume: 40 };
 
@@ -773,8 +776,9 @@ document.head.append(s)
     var loadedAt = Date.now();        // chat messages older than this (join history) never play
     var lastMessageTime = 0;          // newest chat message time seen (server clock)
     var lastMessageKey = '';          // to drop the same message sent again after a reconnect
-    var lastPlayed = {};              // sound url -> Date.now() of its last play
-    var audioByUrl = {};
+    var audioByUrl = {};              // one preloaded copy per url; each play uses a clone of it
+    var playingNow = [];              // clones still playing
+    var pendingTimers = [];           // staggered repeats not started yet
     var settings = readSettings();
 
     // ---------- matching ----------
@@ -810,21 +814,21 @@ document.head.append(s)
         var text = String(msg || '').replace(/<img\b[^>]*>/gi, function (tag) {
             if (/\bclass="[^"]*\bchannel-emote\b/.test(tag)) {
                 var title = /\btitle="([^"]*)"/.exec(tag);
-                if (title) tokens[title[1]] = true;
+                if (title) tokens[title[1]] = (tokens[title[1]] || 0) + 1;
             }
             return ' ';
         });
         text.split(/\s+/).forEach(function (token) {
-            if (token) tokens[token] = true;
+            if (token) tokens[token] = (tokens[token] || 0) + 1;
         });
+        // One url per use, in message order is not needed: repeats are what matter.
         var urls = [];
         usableSounds.forEach(function (entry) {
             if (!entry.url) return;
-            if (tokens[escapeHtml(entryKey(entry))] && urls.indexOf(entry.url) === -1) {
-                urls.push(entry.url);
-            }
+            var count = tokens[escapeHtml(entryKey(entry))] || 0;
+            for (var i = 0; i < count; i++) urls.push(entry.url);
         });
-        return urls;
+        return urls.slice(0, MAX_PER_MESSAGE);
     }
 
     // True only for a message posted after this script loaded and not seen before.
@@ -855,26 +859,50 @@ document.head.append(s)
         return audioByUrl[url];
     }
 
+    function stopAll() {
+        pendingTimers.forEach(clearTimeout);
+        pendingTimers = [];
+        playingNow.slice().forEach(function (audio) { audio.pause(); });
+        playingNow = [];
+    }
+
     function playSound(url) {
-        var now = Date.now();
-        if (lastPlayed[url] !== undefined && now - lastPlayed[url] < COOLDOWN_MS) return false;
-        lastPlayed[url] = now;
-        var audio = getAudio(url);
+        if (!settings.on) return false;
+        if (playingNow.length >= MAX_PLAYING) return false;
+        // A clone of the preloaded copy, so overlapping plays never cut each other off.
+        var base = getAudio(url);
+        var audio = typeof base.cloneNode === 'function' ? base.cloneNode(true) : new Audio(url);
         audio.volume = settings.volume / 100;
+        playingNow.push(audio);
+        var done = function () {
+            var i = playingNow.indexOf(audio);
+            if (i !== -1) playingNow.splice(i, 1);
+        };
+        if (typeof audio.addEventListener === 'function') {
+            audio.addEventListener('ended', done);
+            audio.addEventListener('pause', done);
+            audio.addEventListener('error', done);
+        }
         try {
-            audio.pause();
-            audio.currentTime = 0;
             var playing = audio.play();
             // Browsers block sound until the viewer has clicked the page once; nothing to do then.
-            if (playing && typeof playing.catch === 'function') playing.catch(function () {});
-        } catch (err) { /* same: blocked or not supported */ }
+            if (playing && typeof playing.catch === 'function') playing.catch(done);
+        } catch (err) { done(); }
         return true;
     }
 
     function onChatMsg(data) {
         if (!isFreshMessage(data)) return;
         if (!settings.on) return;
-        soundsInMessage(data.msg).forEach(playSound);
+        soundsInMessage(data.msg).forEach(function (url, i) {
+            if (i === 0) { playSound(url); return; }
+            var timer = setTimeout(function () {
+                var k = pendingTimers.indexOf(timer);
+                if (k !== -1) pendingTimers.splice(k, 1);
+                playSound(url);
+            }, i * STAGGER_MS);
+            pendingTimers.push(timer);
+        });
     }
 
     function preloadAll() {
@@ -1078,14 +1106,14 @@ document.head.append(s)
     onBox.addEventListener('change', function () {
         settings.on = onBox.checked;
         if (settings.on) preloadAll();
-        else Object.keys(audioByUrl).forEach(function (url) { audioByUrl[url].pause(); });
+        else stopAll();
         saveSettings();
         showSettings();
     });
 
     volumeSlider.addEventListener('input', function () {
         settings.volume = Math.max(0, Math.min(100, Math.round(Number(volumeSlider.value) || 0)));
-        Object.keys(audioByUrl).forEach(function (url) { audioByUrl[url].volume = settings.volume / 100; });
+        playingNow.forEach(function (audio) { audio.volume = settings.volume / 100; });
         saveSettings();
         showSettings();
     });
@@ -1147,7 +1175,7 @@ document.head.append(s)
         clearTimeout(rescanTimer);
         if (window.socket && typeof window.socket.off === 'function') window.socket.off('chatMsg', onChatMsg);
         if (wrappedExecEmotes && window.execEmotes === wrappedExecEmotes) window.execEmotes = originalExecEmotes;
-        Object.keys(audioByUrl).forEach(function (url) { audioByUrl[url].pause(); });
+        stopAll();
         document.removeEventListener('mousedown', onDocumentClick, true);
         document.removeEventListener('keydown', onDocumentKey);
         window.removeEventListener('resize', onWindowMove);
