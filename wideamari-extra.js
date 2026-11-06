@@ -915,6 +915,41 @@ document.head.append(s)
         window.execEmotes = wrappedExecEmotes;
     }
 
+    // Chat lines already on screen (join history) were drawn before this file loaded, so their
+    // sound-only names are still plain text. Swap those words for the bordered picture (no sound).
+    function rescanHistory() {
+        var buffer = document.getElementById('messagebuffer');
+        if (!buffer || (window.USEROPTS && window.USEROPTS.no_emotes)) return;
+        var walker = document.createTreeWalker(buffer, NodeFilter.SHOW_TEXT);
+        var nodes = [];
+        while (walker.nextNode()) nodes.push(walker.currentNode);
+        nodes.forEach(function (node) {
+            var parts = node.nodeValue.split(/(\s+)/);
+            var changed = false;
+            var fragment = document.createDocumentFragment();
+            parts.forEach(function (part) {
+                if (Object.prototype.hasOwnProperty.call(soundOnlyByToken, escapeHtml(part))) {
+                    var entry = soundOnlyByToken[escapeHtml(part)];
+                    var image = lookImage(entry.look);
+                    if (image) {
+                        var img = document.createElement('img');
+                        img.className = 'channel-emote wideamari-sound-emote';
+                        img.title = entry.name;
+                        img.src = image;
+                        fragment.appendChild(img);
+                        changed = true;
+                        return;
+                    }
+                }
+                fragment.appendChild(document.createTextNode(part));
+            });
+            if (changed && node.parentNode) node.parentNode.replaceChild(fragment, node);
+        });
+    }
+    rescanHistory();
+    // The emote list may arrive after this file loads; try again shortly after.
+    var rescanTimer = setTimeout(rescanHistory, 2000);
+
     // ---------- settings ----------
 
     function readSettings() {
@@ -1100,6 +1135,7 @@ document.head.append(s)
 
     function teardown() {
         clearTimeout(placeTimer);
+        clearTimeout(rescanTimer);
         if (window.socket && typeof window.socket.off === 'function') window.socket.off('chatMsg', onChatMsg);
         if (wrappedExecEmotes && window.execEmotes === wrappedExecEmotes) window.execEmotes = originalExecEmotes;
         Object.keys(audioByUrl).forEach(function (url) { audioByUrl[url].pause(); });
